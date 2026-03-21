@@ -1,6 +1,259 @@
 # SymbolDumper
 
+**[English](#english) | [中文](#中文)**
+
+Cross-process module & symbol extraction tool for Windows / Android / iOS, supporting PE / ELF / Mach-O binary formats.
+
 跨进程模块信息与符号信息提取工具，支持 Windows / Android / iOS 平台，支持 PE / ELF / Mach-O 二进制格式。
+
+## Screenshot / 效果截图
+
+![IDA Pro symbol resolution result](docs/image.png)
+
+*IDA Pro with symbols applied — pointer data annotated with resolved symbol names (e.g. `KERNEL32.DLL!GetThreadContext`)*
+
+---
+
+<a id="english"></a>
+
+# English
+
+## Features
+
+- **Cross-process module enumeration**: Retrieve base address, size, and path of all loaded modules from an external process
+- **Multi-format symbol parsing**:
+  - **PE**: Export table, Import table, PDB path
+  - **ELF**: `.symtab`, `.dynsym`, `.dynamic` (DT_NEEDED), relocation tables
+  - **Mach-O**: `LC_SYMTAB`, `LC_DYSYMTAB`, Export Trie, Bind Info, `LC_LOAD_DYLIB`
+- **Symbol deduplication**: Deduplicate by `(name, rva)`, prioritizing higher-priority sources
+- **JSON output**: Module info and symbol info stored separately (`modules.json` + `symbols.json`)
+- **IDA Python script**: Scan loaded binary in IDA, match 4/8-byte pointer data to resolve symbol info
+- **Flexible filtering**: Filter output by symbol source (exports, imports, symtab, dynsym)
+
+## Build
+
+```bash
+# Install xmake: https://xmake.io
+xmake f -p windows -m release
+xmake build
+
+# Linux / Android
+xmake f -p linux -m release && xmake build
+
+# macOS / iOS
+xmake f -p macosx -m release && xmake build
+```
+
+## Usage
+
+### Basic Commands
+
+```bash
+# List all processes
+symbol_dumper --list
+
+# Search process by name
+symbol_dumper --list --name explorer
+
+# Dump a process (default: exports + imports only)
+symbol_dumper --pid 1234
+
+# Dump by process name (case-insensitive, partial match)
+symbol_dumper --name explorer
+
+# Parse a single binary file
+symbol_dumper --file kernel32.dll
+```
+
+### Symbol Filtering
+
+By default, only import and export table symbols are dumped. Use these options to control:
+
+```bash
+symbol_dumper --pid 1234 --exports          # Exports only
+symbol_dumper --pid 1234 --imports          # Imports only
+symbol_dumper --file libc.so -E -S          # Exports + symtab
+symbol_dumper --pid 1234 --all              # All symbol sources
+symbol_dumper --name explorer --all -v      # All symbols + verbose
+```
+
+### Full Options
+
+```
+Target:
+  -p, --pid <PID>        Target process ID
+  -n, --name <name>      Find process by name (case-insensitive)
+  -f, --file <path>      Parse a single binary file
+  -o, --output <dir>     Output directory (default: ./output)
+  -l, --list             List running processes
+
+Symbol Filters (default: --exports --imports):
+  -E, --exports          Export table symbols
+  -I, --imports          Import table symbols
+  -S, --symtab           .symtab symbols (ELF/Mach-O)
+  -D, --dynsym           .dynsym symbols (ELF)
+  -A, --all              All symbol sources
+  --libs                 Show imported library list
+
+Other:
+  -v, --verbose          Verbose output
+  -h, --help             Help
+```
+
+## Output Format
+
+Two separate JSON files are generated:
+
+### modules.json
+
+```json
+{
+  "process_id": 1234,
+  "process_name": "explorer.exe",
+  "modules": [
+    {
+      "name": "kernel32.dll",
+      "path": "C:\\Windows\\System32\\kernel32.dll",
+      "base_address": "0x7FFB441E0000",
+      "size": 688128
+    }
+  ]
+}
+```
+
+### symbols.json
+
+```json
+{
+  "process_id": 1234,
+  "modules": [
+    {
+      "module_name": "kernel32.dll",
+      "base_address": "0x7FFB441E0000",
+      "symbol_count": 2896,
+      "symbols": [
+        {
+          "name": "CreateFileW",
+          "rva": "0x24EA0",
+          "address": "0x7FFB44204EA0",
+          "type": "function",
+          "source": "export_table",
+          "ordinal": 196
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Symbol Fields
+
+| Field | Description |
+|-------|-------------|
+| `name` | Symbol name |
+| `rva` | Relative Virtual Address (relative to module base) |
+| `address` | Absolute address (base + rva) |
+| `type` | Type: function / object / forwarder / unknown |
+| `source` | Source: export_table / import_table / symtab / dynsym / export_trie / import(bind), etc. |
+| `library` | Source library name (import symbols only) |
+| `ordinal` | PE export ordinal (PE export symbols only) |
+| `size` | Symbol size (if available) |
+
+## Tool Plugins
+
+### IDA Pro Script
+
+`scripts/ida_symbol_resolver.py` resolves symbol information in IDA Pro.
+
+**Usage:**
+1. Open the target binary in IDA
+2. `File -> Script file...` and select `scripts/ida_symbol_resolver.py`
+3. Select `modules.json` and `symbols.json` when prompted
+4. Choose execution mode:
+   - **Full Scan**: Apply symbol names + scan for pointer matches
+   - **Apply Symbols**: Apply symbol names only
+
+**How it works:**
+1. **Phase 1 - Direct symbol application**: If the current binary's base address matches a module, apply symbol names directly at corresponding RVA positions
+2. **Phase 2 - Pointer scan**: Scan binary data segment by segment, looking for 4/8-byte values matching known symbol addresses, adding cross-reference comments on match
+3. **Optional: Unaligned scan**: Byte-by-byte scan to catch unaligned pointer references (slower)
+
+### x64dbg Symbol Import
+
+`scripts/x64dbg_symbol_loader.py` converts symbols.json into x64dbg-loadable database files (`.dd64`/`.dd32`).
+
+**Usage:**
+
+```bash
+# Basic conversion (generates .dd64 database file)
+python scripts/x64dbg_symbol_loader.py
+
+# Also generate x64dbg script file
+python scripts/x64dbg_symbol_loader.py --script
+
+# Specify input/output paths
+python scripts/x64dbg_symbol_loader.py --symbols output/symbols.json --modules output/modules.json --output output/x64dbg
+
+# Copy directly to x64dbg's db directory
+python scripts/x64dbg_symbol_loader.py --dbdir "E:/Tools/x64dbg/db"
+```
+
+**Loading:**
+1. **Auto-load**: Copy the generated `.dd64` file to x64dbg's `db/` directory; labels load automatically when opening the target program
+2. **Script load**: In x64dbg, `Script -> Run Script...` and select the generated `.txt` script file
+
+### Cheat Engine Symbol Import
+
+`scripts/ce_symbol_loader.lua` loads symbols in Cheat Engine and registers them as searchable symbol names.
+
+**Usage:**
+1. Attach to the target process in CE
+2. Open Lua Engine: `Memory View -> Tools -> Lua Engine`
+3. Load the script:
+   ```lua
+   dofile("scripts/ce_symbol_loader.lua")
+   loadSymbolDumperSymbols()  -- opens file selection dialog
+   ```
+4. Or specify paths directly:
+   ```lua
+   dofile("scripts/ce_symbol_loader.lua")
+   loadSymbolDumperSymbols("output/symbols.json", "output/modules.json")
+   ```
+5. Optional: Add symbols to the address list:
+   ```lua
+   addSymbolsToAddressList("output/symbols.json", "output/modules.json", "target.exe", 500)
+   ```
+
+## Platform Support
+
+| Platform | Process Enumeration | Symbol Parsing |
+|----------|-------------------|----------------|
+| Windows | EnumProcessModulesEx | PE imports/exports/PDB |
+| Linux/Android | /proc/pid/maps | ELF symtab/dynsym/dynamic |
+| macOS/iOS | task_for_pid / proc_regionfilename | Mach-O symtab/export trie/bind |
+
+> **Note**: Android requires root to read `/proc/<pid>/maps`; iOS requires jailbreak or developer entitlements for `task_for_pid`.
+
+## Testing
+
+```bash
+# Run test suite on Windows
+powershell -ExecutionPolicy Bypass -File tests/test_all.ps1
+```
+
+Coverage: help output, process listing, name filtering, file parsing, symbol filtering (exports/imports/all), process dump, address calculation verification, error handling.
+
+## Dependencies
+
+- **xmake** >= 2.5
+- **nlohmann_json** (auto-downloaded via xmake)
+- **C++17** compiler
+
+---
+
+<a id="中文"></a>
+
+# 中文
 
 ## 功能
 
@@ -195,12 +448,12 @@ python scripts/x64dbg_symbol_loader.py --dbdir "E:/Tools/x64dbg/db"
 2. 打开 Lua 引擎：`Memory View -> Tools -> Lua Engine`
 3. 加载脚本：
    ```lua
-   dofile("E:/Project/TheGreatAI/SymbolDumper/scripts/ce_symbol_loader.lua")
+   dofile("scripts/ce_symbol_loader.lua")
    loadSymbolDumperSymbols()  -- 弹出文件选择对话框
    ```
 4. 或直接指定路径：
    ```lua
-   dofile("E:/Project/TheGreatAI/SymbolDumper/scripts/ce_symbol_loader.lua")
+   dofile("scripts/ce_symbol_loader.lua")
    loadSymbolDumperSymbols("output/symbols.json", "output/modules.json")
    ```
 5. 可选：将符号添加到地址列表：
@@ -230,6 +483,8 @@ SymbolDumper/
       process_enum_darwin.cpp         # macOS/iOS 实现
   scripts/
     ida_symbol_resolver.py            # IDA Python 脚本
+    x64dbg_symbol_loader.py           # x64dbg 符号导入脚本
+    ce_symbol_loader.lua              # Cheat Engine 符号导入脚本
   tests/
     test_all.ps1                      # PowerShell 测试套件（50 项测试）
 ```
@@ -258,3 +513,7 @@ powershell -ExecutionPolicy Bypass -File tests/test_all.ps1
 - **xmake** >= 2.5
 - **nlohmann_json**（通过 xmake 自动下载）
 - **C++17** 编译器
+
+## License
+
+MIT
