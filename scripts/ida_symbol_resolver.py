@@ -20,6 +20,11 @@ import os
 import struct
 import time
 
+# ===================================================================
+# Global Configuration
+# ===================================================================
+ENABLE_RENAME = True   # Set to False to disable all rename operations (only apply comments)
+
 try:
     import idaapi
     import idautils
@@ -147,6 +152,15 @@ def make_unique_name(base_name, module_name):
     return qualified
 
 
+def _rename_pointer_location(ea, sym):
+    """Rename a pointer location to reflect the symbol it points to."""
+    current_name = idc.get_name(ea)
+    if current_name and not current_name.startswith(("off_", "qword_", "dword_", "unk_")):
+        return False
+    ptr_name = f"ptr_{sanitize_name(sym['module'].split('.')[0])}__{sanitize_name(sym['name'])}"
+    return ida_name.set_name(ea, ptr_name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK)
+
+
 def scan_binary(db):
     """
     Scan the loaded binary in IDA for pointer-sized values that match
@@ -205,11 +219,12 @@ def scan_binary(db):
             sym_type = sym["type"]
 
             # Set name
-            current_name = idc.get_name(ea)
-            if not current_name or current_name.startswith("sub_") or \
-               current_name.startswith("loc_") or current_name.startswith("unk_"):
-                if ida_name.set_name(ea, name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
-                    phase1_count += 1
+            if ENABLE_RENAME:
+                current_name = idc.get_name(ea)
+                if not current_name or current_name.startswith("sub_") or \
+                   current_name.startswith("loc_") or current_name.startswith("unk_"):
+                    if ida_name.set_name(ea, name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
+                        phase1_count += 1
 
             # Add comment with full info
             comment = f"[SD] {sym['module']}!{sym['name']} ({source}, {sym_type})"
@@ -260,6 +275,8 @@ def scan_binary(db):
                     old_cmt = idc.get_cmt(ea, 0) or ""
                     if "[SD]" not in old_cmt:
                         idc.set_cmt(ea, comment, 0)
+                        if ENABLE_RENAME:
+                            _rename_pointer_location(ea, sym)
                         phase2_count += 1
 
             # Read 8-byte value (only for 64-bit or if scanning both)
@@ -272,6 +289,8 @@ def scan_binary(db):
                         old_cmt = idc.get_cmt(ea, 0) or ""
                         if "[SD]" not in old_cmt:
                             idc.set_cmt(ea, comment, 0)
+                            if ENABLE_RENAME:
+                                _rename_pointer_location(ea, sym)
                             phase2_count += 1
 
             ea += ptr_size  # Advance by pointer size for aligned scan
@@ -355,13 +374,14 @@ def apply_all_module_symbols(db):
         name = sanitize_name(sym["name"])
         current_name = idc.get_name(ea)
 
-        if not current_name or current_name.startswith("sub_") or \
-           current_name.startswith("loc_") or current_name.startswith("unk_"):
-            qualified = make_unique_name(sym["name"], sym["module"])
-            if ida_name.set_name(ea, name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
-                count += 1
-            elif ida_name.set_name(ea, qualified, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
-                count += 1
+        if ENABLE_RENAME:
+            if not current_name or current_name.startswith("sub_") or \
+               current_name.startswith("loc_") or current_name.startswith("unk_"):
+                qualified = make_unique_name(sym["name"], sym["module"])
+                if ida_name.set_name(ea, name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
+                    count += 1
+                elif ida_name.set_name(ea, qualified, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
+                    count += 1
 
         comment = f"[SD] {sym['module']}!{sym['name']} ({sym['source']})"
         idc.set_cmt(ea, comment, 0)
