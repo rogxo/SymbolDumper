@@ -157,8 +157,8 @@ def _rename_pointer_location(ea, sym):
     current_name = idc.get_name(ea)
     if current_name and not current_name.startswith(("off_", "qword_", "dword_", "unk_")):
         return False
-    ptr_name = f"ptr_{sanitize_name(sym['module'].split('.')[0])}__{sanitize_name(sym['name'])}"
-    return ida_name.set_name(ea, ptr_name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK)
+    name = sanitize_name(sym['name'])
+    return ida_name.set_name(ea, name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK)
 
 
 def scan_binary(db):
