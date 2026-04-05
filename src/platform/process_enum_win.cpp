@@ -84,7 +84,8 @@ bool enumerate_modules(uint32_t pid, ProcessInfo& out_info) {
     // Enumerate modules
     HMODULE hMods[1024];
     DWORD cbNeeded = 0;
-    if (EnumProcessModulesEx(hProcess, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_ALL)) {
+    DWORD filter = is_wow64 ? LIST_MODULES_32BIT : LIST_MODULES_ALL;
+    if (EnumProcessModulesEx(hProcess, hMods, sizeof(hMods), &cbNeeded, filter)) {
         DWORD count = cbNeeded / sizeof(HMODULE);
         for (DWORD i = 0; i < count; ++i) {
             ModuleInfo mi;
