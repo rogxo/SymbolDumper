@@ -23,6 +23,43 @@ static std::string wstr_to_utf8(const wchar_t* wstr) {
     return result;
 }
 
+// Case-insensitive substring search in a std::string
+static bool icontains(const std::string& haystack, const char* needle) {
+    std::string h = haystack, n = needle;
+    std::transform(h.begin(), h.end(), h.begin(), ::tolower);
+    std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+    return h.find(n) != std::string::npos;
+}
+
+// Case-insensitive find + replace (first occurrence)
+static bool ireplace(std::string& str, const char* from, const char* to) {
+    std::string lower = str;
+    std::string lfrom = from;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    std::transform(lfrom.begin(), lfrom.end(), lfrom.begin(), ::tolower);
+    auto pos = lower.find(lfrom);
+    if (pos == std::string::npos) return false;
+    str.replace(pos, lfrom.size(), to);
+    return true;
+}
+
+// Fix module path for WOW64 processes: System32 -> SysWOW64
+// When a 64-bit process queries a 32-bit (WOW64) process, GetModuleFileNameExW
+// returns paths like "C:\Windows\System32\user32.dll", but the actual 32-bit DLL
+// is in "C:\Windows\SysWOW64\user32.dll". Without this fix, we'd parse the 64-bit
+// DLL and get completely wrong export RVAs.
+static void fix_wow64_module_path(std::string& path) {
+    if (icontains(path, "\\System32\\")) {
+        std::string candidate = path;
+        if (ireplace(candidate, "\\System32\\", "\\SysWOW64\\")) {
+            DWORD attr = GetFileAttributesA(candidate.c_str());
+            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                path = candidate;
+            }
+        }
+    }
+}
+
 bool enumerate_modules(uint32_t pid, ProcessInfo& out_info) {
     out_info.pid = pid;
     out_info.modules.clear();
@@ -37,6 +74,12 @@ bool enumerate_modules(uint32_t pid, ProcessInfo& out_info) {
     if (GetModuleBaseNameW(hProcess, nullptr, proc_name, MAX_PATH)) {
         out_info.name = wstr_to_utf8(proc_name);
     }
+
+    // Detect if target process is WOW64 (32-bit on 64-bit Windows)
+    BOOL is_wow64 = FALSE;
+#ifdef _WIN64
+    IsWow64Process(hProcess, &is_wow64);
+#endif
 
     // Enumerate modules
     HMODULE hMods[1024];
@@ -53,6 +96,12 @@ bool enumerate_modules(uint32_t pid, ProcessInfo& out_info) {
                 // Extract just the filename
                 auto pos = mi.path.find_last_of("\\/");
                 mi.name = (pos != std::string::npos) ? mi.path.substr(pos + 1) : mi.path;
+            }
+
+            // WOW64 fix: redirect System32 -> SysWOW64 so we parse the correct
+            // 32-bit DLL instead of the 64-bit one
+            if (is_wow64) {
+                fix_wow64_module_path(mi.path);
             }
 
             MODULEINFO modInfo = {};
